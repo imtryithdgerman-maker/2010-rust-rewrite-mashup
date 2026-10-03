@@ -1,16 +1,72 @@
 //! The server-side ER world: arena geometry plus the enemy roster.
 use crate::ai::tick_enemy;
-use crate::arena::{arena_scene, default_spawns};
+use crate::arena::{ARENA_SIZE, FLOOR_TOP_Y, arena_scene, default_spawns};
 use crate::boss_bar::BossBarState;
 use crate::client_view::{EnemySnapshot, ErWorldSnapshot};
 use crate::damage::apply_bullet_hit;
 use crate::enemy::{EnemyKind, ErEnemy};
+use eldenring_assets::{EldenRingMapData, EnemyPlacement};
 use glam::Vec3;
+use std::path::Path;
 use minecraft_terrain::scene::HandcraftedScene;
 
 /// Offset added to enemy indices to form `sim::voxel` mob keys
 /// (`"ER\0\0"` in the high bytes, far above MinecraftOSS entity ids).
 pub const ER_MOB_KEY_BASE: u64 = 0x4552_0000_0000_0000;
+
+/// Stormveil Castle's map id in Elden Ring.
+pub const STORMVEIL_MAP_ID: &str = "m20_00_00_00";
+
+/// Margit, the Fell Omen's character model.
+pub const MARGIT_MODEL: &str = "c4100";
+
+/// Maps a real Elden Ring enemy placement to one of our [`EnemyKind`]s, by
+/// character model first and NPC param id second.
+// TODO: verify against game files — only Margit (c4100) is certain; the
+// soldier/knight model ids and the NpcParam ranges are best guesses.
+pub fn kind_for_enemy(model: &str, npc_param_id: i32) -> EnemyKind {
+    let model = model.to_ascii_lowercase();
+    match model.get(..5).unwrap_or(&model) {
+        MARGIT_MODEL => return EnemyKind::Margit,
+        // Banished/Godrick knights.
+        "c3000" | "c3010" | "c3020" => return EnemyKind::GodrickKnight,
+        // Godrick soldiers and other castle footmen.
+        "c4300" | "c4310" | "c4320" => return EnemyKind::GodrickSoldier,
+        _ => {}
+    }
+    match npc_param_id / 10_000 {
+        4100 => EnemyKind::Margit,
+        3000..=3099 => EnemyKind::GodrickKnight,
+        _ => EnemyKind::GodrickSoldier,
+    }
+}
+
+/// Places real map enemies inside the arena: positions are taken relative
+/// to Margit (or the roster's centroid), anchored at the arena centre,
+/// flattened onto the arena floor and clamped inside the walls.
+// TODO: replace with the real map's collision once the renderer/physics
+// consume `EldenRingMapData::meshes` instead of the voxel arena.
+pub fn arena_spawns_from_map(enemies: &[EnemyPlacement]) -> Vec<(EnemyKind, Vec3, f32)> {
+    if enemies.is_empty() {
+        return Vec::new();
+    }
+    let pos = |e: &EnemyPlacement| Vec3::from(e.position);
+    let anchor = enemies
+        .iter()
+        .find(|e| e.model.eq_ignore_ascii_case(MARGIT_MODEL))
+        .map(pos)
+        .unwrap_or_else(|| enemies.iter().map(pos).sum::<Vec3>() / enemies.len() as f32);
+    let centre = Vec3::new(ARENA_SIZE as f32 * 0.5 + 0.5, FLOOR_TOP_Y, ARENA_SIZE as f32 * 0.5 + 0.5);
+    let (lo, hi) = (1.5, ARENA_SIZE as f32 - 1.5);
+    enemies
+        .iter()
+        .map(|e| {
+            let rel = pos(e) - anchor;
+            let p = Vec3::new((centre.x + rel.x).clamp(lo, hi), FLOOR_TOP_Y, (centre.z + rel.z).clamp(lo, hi));
+            (kind_for_enemy(&e.model, e.npc_param_id), p, e.rotation[1].to_radians())
+        })
+        .collect()
+}
 
 /// A kill reported by [`ErWorldSim::bullet_hit`], kept for the HUD feed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +90,9 @@ pub struct ErWorldSim {
     player_damage_buffer: f32,
     runes_earned: u32,
     kills: Vec<ErKill>,
+    /// The real Elden Ring map this world was built from, if the game was
+    /// found ([`ErWorldSim::from_game_dir`]); `None` for the placeholder arena.
+    pub real_map: Option<EldenRingMapData>,
 }
 
 impl Default for ErWorldSim {
@@ -48,7 +107,11 @@ impl ErWorldSim {
     ///   - 2 GodrickKnights guarding the boss room entrance
     ///   - Margit at center
     pub fn new() -> Self {
-        let enemies = default_spawns()
+        Self::with_spawns(default_spawns(), None)
+    }
+
+    fn with_spawns(spawns: Vec<(EnemyKind, Vec3, f32)>, real_map: Option<EldenRingMapData>) -> Self {
+        let enemies = spawns
             .into_iter()
             .enumerate()
             .map(|(i, (kind, pos, yaw))| ErEnemy::new(kind, pos, yaw, i as u32 + 1))
@@ -60,7 +123,39 @@ impl ErWorldSim {
             player_damage_buffer: 0.0,
             runes_earned: 0,
             kills: Vec::new(),
+            real_map,
         }
+    }
+
+    /// Builds the world from the real Stormveil map (`m20_00_00_00`) of the
+    /// Elden Ring installation at `game_dir` (its `Game` folder). Enemies
+    /// come from the map's MSB; if it has none, the default roster is used.
+    pub fn from_game_dir(game_dir: &Path) -> Result<Self, eldenring_assets::Error> {
+        let map = eldenring_assets::load_map(game_dir, STORMVEIL_MAP_ID)?;
+        Ok(Self::from_map_data(map))
+    }
+
+    /// Builds the world from already loaded map data.
+    pub fn from_map_data(map: EldenRingMapData) -> Self {
+        let mut spawns = arena_spawns_from_map(&map.enemies);
+        if spawns.is_empty() {
+            spawns = default_spawns();
+        }
+        Self::with_spawns(spawns, Some(map))
+    }
+
+    /// Real Stormveil if Elden Ring is installed (Steam registry/library
+    /// folders or `ELDEN_RING_PATH`), otherwise the placeholder arena.
+    pub fn new_with_real_map_or_placeholder() -> Self {
+        match eldenring_assets::find_game_dir().map(|dir| Self::from_game_dir(&dir)) {
+            Some(Ok(world)) => world,
+            _ => Self::new(),
+        }
+    }
+
+    /// `true` when built from the real game files.
+    pub fn has_real_map(&self) -> bool {
+        self.real_map.is_some()
     }
 
     /// Server ticks simulated since [`ErWorldSim::new`].
@@ -326,6 +421,45 @@ mod tests {
         assert_eq!(w.enemy_capsules().len(), 9);
         let bar = w.boss_bar().unwrap();
         assert_eq!((bar.phase, bar.health_fraction), (1, 1.0));
+        assert!(!w.has_real_map());
+    }
+
+    fn placement(model: &str, pos: [f32; 3], npc: i32) -> EnemyPlacement {
+        EnemyPlacement {
+            name: format!("{model}_0000"),
+            model: model.into(),
+            position: pos,
+            rotation: [0.0, 90.0, 0.0],
+            npc_param_id: npc,
+            think_param_id: 0,
+        }
+    }
+
+    #[test]
+    fn real_map_enemies_map_into_arena() {
+        assert_eq!(kind_for_enemy("c4100", 0), EnemyKind::Margit);
+        assert_eq!(kind_for_enemy("c9999", 41_000_000), EnemyKind::Margit);
+        assert_eq!(kind_for_enemy("c9999", 0), EnemyKind::GodrickSoldier);
+        let map = EldenRingMapData {
+            map_id: STORMVEIL_MAP_ID.into(),
+            enemies: vec![
+                placement("c4100", [-100.0, 50.0, 200.0], 41_000_000),
+                placement("c3010", [-95.0, 48.0, 190.0], 0),
+                placement("c4300", [500.0, 0.0, 0.0], 0),
+            ],
+            ..EldenRingMapData::default()
+        };
+        let w = ErWorldSim::from_map_data(map);
+        assert!(w.has_real_map());
+        assert_eq!(w.enemies.len(), 3);
+        assert_eq!(w.enemies[0].kind, EnemyKind::Margit);
+        assert_eq!(w.enemies[1].kind, EnemyKind::GodrickKnight);
+        assert_eq!(w.enemies[0].position, Vec3::new(32.5, FLOOR_TOP_Y, 32.5));
+        assert_eq!(w.enemies[1].position, Vec3::new(37.5, FLOOR_TOP_Y, 22.5));
+        assert_eq!(w.enemies[2].position.x, ARENA_SIZE as f32 - 1.5);
+        assert!(w.boss_bar().is_some());
+        // An empty roster falls back to the default spawns.
+        assert_eq!(ErWorldSim::from_map_data(EldenRingMapData::default()).enemies.len(), 9);
     }
 
     #[test]

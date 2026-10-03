@@ -1,0 +1,21 @@
+[package]
+name = "eldenring_assets"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Reads Elden Ring's own files from a Steam install: BHD5/BDT archives, DCX, BND4, FLVER, MSBE and TPF."
+
+[dependencies]
+aes = "0.8"
+flate2.workspace = true
+glam.workspace = true
+libloading = "0.8"
+num-bigint = "0.4"
+thiserror = "2"
+xmodel_runtime.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[lints]
+workspace = true
