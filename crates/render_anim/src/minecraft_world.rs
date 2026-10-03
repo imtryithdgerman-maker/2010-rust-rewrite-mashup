@@ -332,8 +332,12 @@ fn update(
         stop(&mut runtime, &mut view);
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             if assets::minecraft_map::is_eldenring(&match_.zone) {
-                diag::info!(World, "Elden Ring: Stormveil arena enemies spawned");
-                runtime.er = Some(eldenring_world::ErWorldSim::new());
+                // TODO: move the real-map load off the main thread like the
+                // Minecraft world load below.
+                let er = eldenring_world::ErWorldSim::new_with_real_map_or_placeholder();
+                let source = if er.has_real_map() { "real m20_00_00_00 MSB" } else { "placeholder roster" };
+                diag::info!(World, "Elden Ring: Stormveil enemies spawned from {source}");
+                runtime.er = Some(er);
             }
             let seed = seed();
             diag::info!(World, "Minecraft world: seed {seed}");

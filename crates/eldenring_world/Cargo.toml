@@ -6,5 +6,6 @@ license = "Apache-2.0"
 description = "Elden Ring Stormveil arena and enemies for IW4L: shoot ER bosses with MW2 guns."
 
 [dependencies]
+eldenring_assets = { workspace = true }
 glam = { workspace = true }
 minecraft_terrain = { path = "../minecraft_terrain" }
