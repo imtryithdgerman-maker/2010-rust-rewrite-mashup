@@ -8,8 +8,19 @@ const PROXY_ZONE: &str = "iw4:mp_rust";
 /// The map whose level script the Minecraft world runs.
 pub const PROXY_MAP: &str = "mp_rust";
 
+/// The Elden Ring map: Stormveil arena enemies (`eldenring_world`) on the
+/// same voxel runtime as the Minecraft world.
+pub const ER_ZONE: &str = "er:stormveil_arena";
+
+/// Whether the zone runs on the Minecraft voxel runtime: the Minecraft
+/// world itself or the Elden Ring map built on it.
 pub fn is_minecraft(zone: &str) -> bool {
-    zone.eq_ignore_ascii_case(ZONE)
+    zone.eq_ignore_ascii_case(ZONE) || is_eldenring(zone)
+}
+
+/// Whether a zone is the Elden Ring map.
+pub fn is_eldenring(zone: &str) -> bool {
+    zone.eq_ignore_ascii_case(ER_ZONE)
 }
 
 /// Whether a load's zone, with or without its content namespace, is the
@@ -53,8 +64,13 @@ pub fn find_zone_file(root_dir: &GamesRoot, zone: &str) -> Result<ZoneFile, Stri
         }
     };
     let mut proxy = asset_transport::find_zone_file(root_dir, PROXY_ZONE)?;
-    proxy.zone_name = ZONE.to_owned();
-    proxy.alias_note = Some(format!("Minecraft world from {}", checkout.display()));
+    let er = zone.split_once(':').is_some_and(|(_, rest)| is_eldenring(rest)) || is_eldenring(zone);
+    proxy.zone_name = if er { ER_ZONE } else { ZONE }.to_owned();
+    proxy.alias_note = Some(if er {
+        format!("Elden Ring: Stormveil Arena on the Minecraft world from {}", checkout.display())
+    } else {
+        format!("Minecraft world from {}", checkout.display())
+    });
     Ok(proxy)
 }
 
@@ -68,6 +84,10 @@ pub fn list_mp_map_packs(root_dir: &GamesRoot) -> Vec<asset_transport::MapPack> 
             label: "Minecraft".to_owned(),
             maps: vec![ZONE.to_owned()],
         });
+        packs.push(asset_transport::MapPack {
+            label: "Elden Ring".to_owned(),
+            maps: vec![ER_ZONE.to_owned()],
+        });
     }
     packs
 }
@@ -78,6 +98,7 @@ pub fn list_mp_maps(root_dir: &GamesRoot) -> Vec<String> {
     prepare();
     if asset_transport::find_zone_file(root_dir, PROXY_ZONE).is_ok() {
         maps.push(ZONE.to_owned());
+        maps.push(ER_ZONE.to_owned());
     }
     maps.sort();
     maps.dedup();

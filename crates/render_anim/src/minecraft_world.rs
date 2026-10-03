@@ -126,6 +126,8 @@ struct Runtime {
     /// Boxes of each shape id, to reuse an id for a repeated shape.
     shape_ids: HashMap<Vec<[u32; 6]>, u16>,
     was_alive: bool,
+    /// The Elden Ring map's enemies, when that map is loaded.
+    er: Option<eldenring_world::ErWorldSim>,
 }
 
 /// The player's MW2 body stands in the inventory's character window, on a
@@ -329,6 +331,10 @@ fn update(
     for match_ in installed.read() {
         stop(&mut runtime, &mut view);
         if assets::minecraft_map::is_minecraft(&match_.zone) {
+            if assets::minecraft_map::is_eldenring(&match_.zone) {
+                diag::info!(World, "Elden Ring: Stormveil arena enemies spawned");
+                runtime.er = Some(eldenring_world::ErWorldSim::new());
+            }
             let seed = seed();
             diag::info!(World, "Minecraft world: seed {seed}");
             let (send, receive) = mpsc::channel();
@@ -412,6 +418,7 @@ fn update(
         cloud_center,
         mining,
         entities,
+        er,
         inventory_ui,
         sounds,
         hand,
@@ -685,9 +692,19 @@ fn update(
     let (mob_shots, events): (Vec<_>, Vec<_>) = all_events
         .into_iter()
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. }));
-    if let Some(entities) = entities.as_mut() {
-        for shot in mob_shots {
-            if let sim::voxel::VoxelEvent::MobShot { key, damage, from } = shot {
+    for shot in mob_shots {
+        if let sim::voxel::VoxelEvent::MobShot { key, damage, from } = shot {
+            // An Elden Ring enemy: the sim already scaled the damage for
+            // range and hit location, so hitloc 0 (x1) avoids scaling twice.
+            if let Some(er) = er.as_mut()
+                && let Some(enemy_idx) = er.enemy_for_mob_key(key)
+            {
+                if er.bullet_hit(enemy_idx, damage, 0) {
+                    diag::info!(World, "Elden Ring: enemy {enemy_idx} felled");
+                }
+                continue;
+            }
+            if let Some(entities) = entities.as_mut() {
                 entities.shoot(key, damage, from, mc_yaw);
             }
         }
@@ -907,7 +924,37 @@ fn update(
             .to_cols_array();
         }
 
-        sim::voxel::set_mob_boxes(entities.boxes());
+        let mut boxes = entities.boxes();
+        if let Some(er) = er.as_mut() {
+            // The arena's block space sits with its player spawn on the
+            // world spawn: `offset` takes arena blocks to world blocks.
+            let (spawn, _) = eldenring_world::player_spawn();
+            let offset = [origin[0] - f64::from(spawn.x), origin[1] - f64::from(spawn.y), origin[2] - f64::from(spawn.z)];
+            let player = alive.then(|| {
+                eldenring_world::glam::Vec3::new(
+                    (feet[0] - offset[0]) as f32,
+                    (feet[1] - offset[1]) as f32,
+                    (feet[2] - offset[2]) as f32,
+                )
+            });
+            for _ in 0..mob_ticks {
+                er.tick(player);
+            }
+            let dealt = er.take_player_damage();
+            if dealt > 0.0 {
+                sim::voxel::push_player_damage(local.0.0, dealt.round() as i32, None);
+            }
+            for kill in er.take_kills() {
+                diag::info!(World, "Elden Ring: {:?} felled, {} runes", kill.kind, kill.runes);
+            }
+            // The enemies' hitboxes go to the bullet trace with the mobs'.
+            boxes.extend(er.mob_boxes().into_iter().map(|(key, b)| {
+                (key, [b[0] + offset[0], b[1] + offset[1], b[2] + offset[2], b[3] + offset[0], b[4] + offset[1], b[5] + offset[2]])
+            }));
+            // TODO(eldenring): stamp `er.arena` blocks into `world.scene` and
+            // `sim::voxel`, draw the enemies (`er.snapshot()`) and the boss bar.
+        }
+        sim::voxel::set_mob_boxes(boxes);
         entities.tick_scene(&world.scene, mob_ticks);
         let sky_darken = (15.0 - world.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let meshes = entities.meshes(
@@ -1086,6 +1133,7 @@ fn update(
 }
 
 fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
+    runtime.er = None;
     if runtime.world.take().is_some() || runtime.loading.take().is_some() || view.active {
         sim::voxel::deactivate();
         view.active = false;

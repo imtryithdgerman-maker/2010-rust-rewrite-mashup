@@ -23,6 +23,8 @@ pub use client_view::{EnemySnapshot, ErWorldSnapshot};
 pub use damage::{apply_bullet_hit, hitloc_scale};
 pub use enemy::{AiState, EnemyKind, ErEnemy};
 pub use world::{ER_MOB_KEY_BASE, ErKill, ErWorldSim};
+/// The `glam` this crate's API uses, for callers pinned to another version.
+pub use glam;
 
 /// Server ticks per second (IW4L's `sv_fps` default of 20).
 pub const TICKS_PER_SECOND: i32 = 20;

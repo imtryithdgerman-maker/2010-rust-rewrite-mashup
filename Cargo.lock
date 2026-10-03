@@ -5216,6 +5216,7 @@ dependencies = [
  "bytemuck",
  "diag",
  "dpvs_iw4",
+ "eldenring_world",
  "entity_iw4",
  "frame",
  "fx",
