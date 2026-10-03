@@ -31,6 +31,7 @@ members = [
     "crates/diag",
     "crates/dpvs_iw4",
     "crates/entity_iw4",
+    "crates/eldenring_world",
     "crates/fastfile_iw4",
     "crates/fastfile_t5",
     "crates/fastfile_iw5",
@@ -78,6 +79,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+eldenring_world = { path = "crates/eldenring_world" }
 bevy = { version = "0.19", default-features = false, features = [
     "bevy_window",
     "bevy_winit",

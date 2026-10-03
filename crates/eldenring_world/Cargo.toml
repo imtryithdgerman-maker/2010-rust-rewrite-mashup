@@ -1,0 +1,10 @@
+[package]
+name = "eldenring_world"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Elden Ring Stormveil arena and enemies for IW4L: shoot ER bosses with MW2 guns."
+
+[dependencies]
+glam = { workspace = true }
+minecraft_terrain = { path = "../minecraft_terrain" }
